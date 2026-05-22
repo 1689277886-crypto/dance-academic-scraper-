@@ -155,7 +155,7 @@ if __name__ == "__main__":
     test_url = "https://mp.weixin.qq.com/s/fe8K-dM6s-mZkVUm4lcFRQ"
     
     # 优先从 GitHub Actions 环境变量读取密钥
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCnAV69Pg64cpdVfa7-UnpTzqdF5EGjrMw")
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
     
     if GEMINI_API_KEY:
         json_output = fetch_and_analyze_article(test_url, GEMINI_API_KEY)
