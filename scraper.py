@@ -154,15 +154,18 @@ if __name__ == "__main__":
     
     test_url = "https://mp.weixin.qq.com/s/fe8K-dM6s-mZkVUm4lcFRQ"
     
-    # 优先从 GitHub Actions 环境变量读取密钥
+   # 优先从 GitHub Actions 环境变量读取密钥
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
     
+    # --- 新增的 Debug 代码 ---
+    if GEMINI_API_KEY:
+        print(f"系统成功读取到环境变量。")
+        print(f"当前使用的密钥长度: {len(GEMINI_API_KEY)}")
+        print(f"当前使用的密钥前5位: {GEMINI_API_KEY[:5]}***")
+    else:
+        print("致命错误：系统未能读取到任何环境变量，GEMINI_API_KEY 为空。")
+        exit(1)
+    # -------------------------
+
     if GEMINI_API_KEY:
         json_output = fetch_and_analyze_article(test_url, GEMINI_API_KEY)
-        if json_output:
-            print("\n================ Gemini 结构化输出结果 ================")
-            print(json_output)
-            # 将结果写入数据库
-            save_to_database(json_output, test_url)
-    else:
-        print("未检测到有效的 GEMINI_API_KEY")
