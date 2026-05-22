@@ -21,10 +21,11 @@ jobs:
     - name: Install Dependencies
       run: pip install requests beautifulsoup4 google-genai pydantic
 
-    - name: Run Scraper
+- name: Run Scraper
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: python ./scraper.py
+      # 注意这里加上了 -u
+      run: python -u ./scraper.py
 
 # 关键步骤：把生成的数据库文件提交并推送回仓库
     - name: Commit and Push Database Changes
