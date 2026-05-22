@@ -92,10 +92,10 @@ def fetch_and_analyze_article(url: str, api_key: str):
         )
         contents = [prompt, f"网页文本内容如下：\n{text_content}"]
         
-       print("正在提取并下载海报图片...")
+        print("正在提取并下载海报图片...")
         img_tags = content_node.find_all('img')
         img_count = 0
-        MAX_IMAGES = 6  # 设定安全阀：最多只处理6张图片，足以覆盖绝大多数海报
+        MAX_IMAGES = 6  # 设定安全阀：最多只处理6张图片
         
         for img in img_tags:
             if img_count >= MAX_IMAGES:
@@ -105,15 +105,12 @@ def fetch_and_analyze_article(url: str, api_key: str):
             img_url = img.get('data-src')
             if img_url:
                 try:
-                    # 微信常用 gif 作为排版元素，直接跳过不下载
                     if "wx_fmt=gif" in img_url:
                         continue
                         
-                    # 将下载超时时间从10秒缩短到5秒
                     img_resp = requests.get(img_url, headers=headers, proxies=proxies, timeout=5)
                     if img_resp.status_code == 200:
                         mime_type = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
-                        # 二次确认，确保不把动图发给模型
                         if "image" in mime_type and "gif" not in mime_type:
                             img_part = types.Part.from_bytes(
                                 data=img_resp.content,
@@ -146,7 +143,6 @@ def fetch_and_analyze_article(url: str, api_key: str):
     except Exception as e:
         print(f"程序运行异常: {str(e)}")
         return None
-
 # ==================== 4. 执行入口 ====================
 if __name__ == "__main__":
     # 初始化创建数据库
