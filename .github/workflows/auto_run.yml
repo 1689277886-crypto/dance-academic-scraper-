@@ -1,7 +1,12 @@
 name: Auto Academic Scraper
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+    inputs:
+      article_urls:
+        description: "要采集的公众号文章链接；多篇文章可用英文逗号或换行分隔"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,6 +29,8 @@ jobs:
     - name: Run Scraper
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+        ARTICLE_URLS: ${{ inputs.article_urls || vars.ARTICLE_URLS }}
       run: python -u ./scraper.py
 
     - name: Commit and Push Database Changes
