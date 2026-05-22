@@ -92,18 +92,29 @@ def fetch_and_analyze_article(url: str, api_key: str):
         )
         contents = [prompt, f"网页文本内容如下：\n{text_content}"]
         
-        print("正在提取并下载海报图片...")
+       print("正在提取并下载海报图片...")
         img_tags = content_node.find_all('img')
         img_count = 0
+        MAX_IMAGES = 6  # 设定安全阀：最多只处理6张图片，足以覆盖绝大多数海报
         
         for img in img_tags:
+            if img_count >= MAX_IMAGES:
+                print(f"已达到图片数量上限 ({MAX_IMAGES}张)，跳过剩余排版图片以保障效率。")
+                break
+                
             img_url = img.get('data-src')
             if img_url:
                 try:
-                    img_resp = requests.get(img_url, headers=headers, proxies=proxies, timeout=10)
+                    # 微信常用 gif 作为排版元素，直接跳过不下载
+                    if "wx_fmt=gif" in img_url:
+                        continue
+                        
+                    # 将下载超时时间从10秒缩短到5秒
+                    img_resp = requests.get(img_url, headers=headers, proxies=proxies, timeout=5)
                     if img_resp.status_code == 200:
                         mime_type = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
-                        if "image" in mime_type:
+                        # 二次确认，确保不把动图发给模型
+                        if "image" in mime_type and "gif" not in mime_type:
                             img_part = types.Part.from_bytes(
                                 data=img_resp.content,
                                 mime_type=mime_type
