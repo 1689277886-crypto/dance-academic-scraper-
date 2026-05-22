@@ -13,10 +13,6 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 【关键修改】添加这行命令，让 GitHub 在运行前把目录下的文件全部列出来
-    - name: Debug - List files
-      run: ls -R
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -25,7 +21,18 @@ jobs:
     - name: Install Dependencies
       run: pip install requests beautifulsoup4 google-genai pydantic
 
+    # 【关键修改】在运行前，强制进入根目录，确保能找到 scraper.py
     - name: Run Scraper Script
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: python scraper.py
+      run: |
+        ls -F
+        python scraper.py
+
+    - name: Commit and Push Database Changes
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add academic_events.db || echo "No database file to add"
+        git commit -m "自动更新数据库 [skip ci]" || echo "No changes to commit"
+        git push || echo "Nothing to push"
