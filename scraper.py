@@ -26,7 +26,7 @@ def init_database():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS academic_events (
-            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,  -- 修正此处语法
             category TEXT,
             title TEXT,
             date TEXT,
