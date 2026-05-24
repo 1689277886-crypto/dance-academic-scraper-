@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       article_urls:
-        description: "要采集的公众号文章链接；多篇文章可用英文逗号或换行分隔"
+        description: "要采集的公众号文章链接；多篇文章可用英文逗号或换行分隔；可留空只采集网站"
+        required: false
+        type: string
+      website_urls:
+        description: "要采集的网站入口；留空则使用上海国际舞蹈中心、南京保利大剧院、江苏大剧院"
         required: false
         type: string
 
@@ -30,7 +34,8 @@ jobs:
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
-        ARTICLE_URLS: ${{ inputs.article_urls || vars.ARTICLE_URLS }}
+        ARTICLE_URLS: ${{ inputs.article_urls }}
+        WEBSITE_URLS: ${{ inputs.website_urls }}
       run: python -u ./scraper.py
 
     - name: Commit and Push Database Changes
