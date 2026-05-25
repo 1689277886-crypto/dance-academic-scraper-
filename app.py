@@ -23,6 +23,7 @@ st.markdown("按城市整理演出资讯与学术讲座/研讨会，仅展示今
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 DISPLAY_SECTIONS = ["演出资讯", "学术讲座/研讨会"]
+EXCLUDED_SHOW_TITLES = ["无名之辈", "叹春风"]
 
 PERFORMANCE_KEYWORDS = [
     "舞剧", "演出", "剧目", "购票", "开票", "剧场", "剧院", "专场",
@@ -100,6 +101,18 @@ def clean_value(value, fallback="待公布"):
     if pd.isna(value) or str(value).strip() == "":
         return fallback
     return str(value).strip()
+
+
+def normalize_title(title):
+    text = str(title or "")
+    text = re.sub(r"[《》【】\[\]（）()“”\"'·\s]", "", text)
+    text = re.sub(r"(舞剧|音乐剧|芭蕾舞剧|芭蕾|演出|中文版|巡演|专场|经典版)", "", text)
+    return text.lower()
+
+
+def is_excluded_show(title):
+    normalized = normalize_title(title)
+    return any(normalize_title(excluded) in normalized for excluded in EXCLUDED_SHOW_TITLES)
 
 
 def today_in_china():
@@ -231,9 +244,14 @@ def city_sort_key(city):
 
 def prepare_display_data(data):
     display_df = data.copy()
+    for column in ["poster_url", "intro", "ticket_url", "source"]:
+        if column not in display_df.columns:
+            display_df[column] = ""
+
     display_df = display_df[display_df["date"].apply(is_current_or_future)]
     display_df["首页板块"] = display_df.apply(classify_section, axis=1)
     display_df = display_df[display_df["首页板块"].isin(DISPLAY_SECTIONS)]
+    display_df = display_df[~display_df["title"].apply(is_excluded_show)]
 
     api_key = get_api_key()
     with st.spinner("正在判断城市并整理信息..."):
@@ -262,8 +280,40 @@ def prepare_display_data(data):
     display_df["名称"] = display_df["title"].apply(lambda value: clean_value(value, "未命名信息"))
     display_df["时间"] = display_df["date"].apply(clean_value)
     display_df["地点"] = display_df["location"].apply(clean_value)
+    display_df["简介"] = display_df.apply(
+        lambda row: clean_value(row.get("intro"), clean_value(row.get("summary"), "")),
+        axis=1
+    )
+    display_df["海报"] = display_df["poster_url"].apply(lambda value: clean_value(value, ""))
+    display_df["购票入口"] = display_df.apply(
+        lambda row: clean_value(row.get("ticket_url"), clean_value(row.get("url"), "")),
+        axis=1
+    )
+    display_df["来源"] = display_df["source"].apply(lambda value: clean_value(value, ""))
     display_df["城市排序"] = display_df["城市"].apply(city_sort_key)
     return display_df.sort_values(["首页板块", "城市排序", "地点", "时间", "名称"], na_position="last")
+
+
+def render_performance_card(row):
+    with st.container(border=True):
+        image_col, info_col = st.columns([1, 4])
+        poster_url = clean_value(row.get("海报"), "")
+        with image_col:
+            if poster_url:
+                st.image(poster_url, use_container_width=True)
+        with info_col:
+            st.markdown(f"**{clean_value(row.get('名称'), '未命名信息')}**")
+            st.caption(f"时间：{clean_value(row.get('时间'))} | 地点：{clean_value(row.get('地点'))}")
+            intro = clean_value(row.get("简介"), "")
+            if intro:
+                st.write(intro[:100])
+            source = clean_value(row.get("来源"), "")
+            ticket_url = clean_value(row.get("购票入口"), "")
+            footer_cols = st.columns([1, 1])
+            if source:
+                footer_cols[0].caption(f"来源：{source}")
+            if ticket_url:
+                footer_cols[1].link_button("购票入口", ticket_url)
 
 
 def load_data():
@@ -306,18 +356,22 @@ try:
 
         section_cities = sorted(section_df["城市"].unique(), key=city_sort_key)
         for city in section_cities:
-            city_df = section_df[section_df["城市"] == city][["名称", "时间", "地点"]]
+            city_df = section_df[section_df["城市"] == city]
             st.markdown(f"**{city}**")
-            st.dataframe(
-                city_df,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "名称": st.column_config.TextColumn("名称", width="large"),
-                    "时间": st.column_config.TextColumn("时间", width="medium"),
-                    "地点": st.column_config.TextColumn("地点", width="medium"),
-                }
-            )
+            if section == "演出资讯":
+                for _, row in city_df.iterrows():
+                    render_performance_card(row)
+            else:
+                st.dataframe(
+                    city_df[["名称", "时间", "地点"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "名称": st.column_config.TextColumn("名称", width="large"),
+                        "时间": st.column_config.TextColumn("时间", width="medium"),
+                        "地点": st.column_config.TextColumn("地点", width="medium"),
+                    }
+                )
 
 except Exception as e:
     st.error(f"数据库读取失败，请检查文件是否存在: {e}")
