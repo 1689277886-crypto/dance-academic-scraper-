@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sqlite3
+from html import escape
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -18,11 +19,293 @@ except Exception:
 
 st.set_page_config(page_title="舞蹈学术信息看板", layout="wide")
 
-st.title("舞蹈学术信息看板")
-st.markdown("按城市整理演出资讯与学术讲座/研讨会，仅展示今天及未来的信息。")
+st.markdown("""
+<style>
+    :root {
+        --ink: #17231f;
+        --muted: #63736b;
+        --line: #d9e2dc;
+        --paper: #f7faf6;
+        --panel: #ffffff;
+        --green: #245c45;
+        --green-2: #3f7b60;
+        --green-soft: #e7f0ea;
+    }
+
+    .stApp {
+        background: var(--paper);
+        color: var(--ink);
+    }
+
+    [data-testid="stHeader"] {
+        background: rgba(247, 250, 246, 0.88);
+        backdrop-filter: blur(8px);
+    }
+
+    .block-container {
+        max-width: 1180px;
+        padding-top: 1.4rem;
+        padding-bottom: 4rem;
+    }
+
+    .site-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.8rem 0 1.1rem;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 1.4rem;
+    }
+
+    .brand {
+        font-size: 1.08rem;
+        font-weight: 700;
+        color: var(--green);
+    }
+
+    .nav-links {
+        display: flex;
+        gap: 1rem;
+        color: var(--muted);
+        font-size: 0.92rem;
+    }
+
+    .hero {
+        background: linear-gradient(180deg, #edf5ef 0%, #f7faf6 100%);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 2.1rem 2rem 1.8rem;
+        margin-bottom: 1rem;
+    }
+
+    .hero-kicker {
+        color: var(--green-2);
+        font-size: 0.86rem;
+        font-weight: 700;
+        margin-bottom: 0.45rem;
+    }
+
+    .hero-title {
+        color: var(--ink);
+        font-size: clamp(2rem, 5vw, 4.4rem);
+        line-height: 1.05;
+        font-weight: 750;
+        margin: 0;
+    }
+
+    .hero-subtitle {
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.7;
+        margin-top: 1rem;
+    }
+
+    .stat-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin: 1rem 0 1.5rem;
+    }
+
+    .stat-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    .stat-label {
+        color: var(--muted);
+        font-size: 0.82rem;
+    }
+
+    .stat-value {
+        color: var(--green);
+        font-size: 1.9rem;
+        font-weight: 750;
+        margin-top: 0.3rem;
+    }
+
+    .section-heading {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.55rem;
+        margin: 1.8rem 0 0.9rem;
+    }
+
+    .section-heading h2 {
+        font-size: 1.35rem;
+        color: var(--ink);
+        margin: 0;
+    }
+
+    .section-heading span {
+        color: var(--muted);
+        font-size: 0.86rem;
+    }
+
+    .poster-wall {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 0.8rem;
+        margin-bottom: 1.4rem;
+    }
+
+    .poster-tile {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        min-height: 220px;
+    }
+
+    .poster-tile img {
+        width: 100%;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
+        display: block;
+        background: var(--green-soft);
+    }
+
+    .poster-title {
+        padding: 0.58rem 0.65rem 0.72rem;
+        font-size: 0.82rem;
+        line-height: 1.35;
+        color: var(--ink);
+    }
+
+    .city-chip {
+        display: inline-block;
+        background: var(--green-soft);
+        color: var(--green);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.28rem 0.7rem;
+        font-size: 0.84rem;
+        font-weight: 650;
+        margin: 0.6rem 0 0.55rem;
+    }
+
+    .performance-card {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 1rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .performance-card img {
+        width: 112px;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
+        border-radius: 6px;
+        background: var(--green-soft);
+    }
+
+    .performance-title {
+        color: var(--ink);
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.35rem;
+    }
+
+    .performance-meta {
+        color: var(--muted);
+        font-size: 0.86rem;
+        line-height: 1.5;
+        margin-bottom: 0.45rem;
+    }
+
+    .performance-intro {
+        color: #35443e;
+        font-size: 0.92rem;
+        line-height: 1.58;
+        margin-bottom: 0.65rem;
+    }
+
+    .ticket-link {
+        display: inline-block;
+        color: #ffffff !important;
+        background: var(--green);
+        border-radius: 6px;
+        padding: 0.42rem 0.72rem;
+        text-decoration: none !important;
+        font-size: 0.86rem;
+        font-weight: 650;
+    }
+
+    .source-text {
+        color: var(--muted);
+        font-size: 0.82rem;
+        margin-left: 0.7rem;
+    }
+
+    div[data-testid="stTextInput"] input {
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #ffffff;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.5rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px 8px 0 0;
+        color: var(--green);
+    }
+
+    @media (max-width: 720px) {
+        .nav-links {
+            display: none;
+        }
+        .hero {
+            padding: 1.4rem;
+        }
+        .stat-row {
+            grid-template-columns: 1fr;
+        }
+        .performance-card {
+            grid-template-columns: 82px minmax(0, 1fr);
+        }
+        .performance-card img {
+            width: 82px;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="site-nav">
+  <div class="brand">舞蹈学术信息看板</div>
+  <div class="nav-links">
+    <span>舞剧资讯</span>
+    <span>讲座信息</span>
+    <span>城市索引</span>
+  </div>
+</div>
+
+<section class="hero">
+  <div class="hero-kicker">Dance Information Board</div>
+  <h1 class="hero-title">近期舞蹈资讯<br/>与学术讲座</h1>
+  <div class="hero-subtitle">
+    聚合公开来源中的舞剧演出、购票入口与讲座信息，按城市与类别整理，仅保留今天及未来可关注的信息。
+  </div>
+</section>
+""", unsafe_allow_html=True)
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-DISPLAY_SECTIONS = ["演出资讯", "学术讲座/研讨会"]
+DISPLAY_SECTIONS = ["舞剧资讯", "讲座信息"]
 EXCLUDED_SHOW_TITLES = ["无名之辈", "叹春风"]
 
 PERFORMANCE_KEYWORDS = [
@@ -175,10 +458,10 @@ def classify_section(row):
     ]).lower()
 
     if category == "舞剧信息" or any(keyword.lower() in text for keyword in PERFORMANCE_KEYWORDS):
-        return "演出资讯"
+        return "舞剧资讯"
 
     if category == "学术讲座" or any(keyword.lower() in text for keyword in ACADEMIC_KEYWORDS):
-        return "学术讲座/研讨会"
+        return "讲座信息"
 
     return ""
 
@@ -268,11 +551,11 @@ def prepare_display_data(data):
     display_df["地区"] = display_df["城市"].map(CITY_TO_REGION).fillna("其他")
     display_df = display_df[
         (
-            (display_df["首页板块"] == "演出资讯")
+            (display_df["首页板块"] == "舞剧资讯")
             & display_df["地区"].isin(["浙江", "江苏", "上海"])
         )
         | (
-            (display_df["首页板块"] == "学术讲座/研讨会")
+            (display_df["首页板块"] == "讲座信息")
             & display_df["地区"].isin(["浙江", "江苏", "上海", "北京"])
         )
     ]
@@ -295,25 +578,83 @@ def prepare_display_data(data):
 
 
 def render_performance_card(row):
-    with st.container(border=True):
-        image_col, info_col = st.columns([1, 4])
-        poster_url = clean_value(row.get("海报"), "")
-        with image_col:
-            if poster_url:
-                st.image(poster_url, use_container_width=True)
-        with info_col:
-            st.markdown(f"**{clean_value(row.get('名称'), '未命名信息')}**")
-            st.caption(f"时间：{clean_value(row.get('时间'))} | 地点：{clean_value(row.get('地点'))}")
-            intro = clean_value(row.get("简介"), "")
-            if intro:
-                st.write(intro[:100])
-            source = clean_value(row.get("来源"), "")
-            ticket_url = clean_value(row.get("购票入口"), "")
-            footer_cols = st.columns([1, 1])
-            if source:
-                footer_cols[0].caption(f"来源：{source}")
-            if ticket_url:
-                footer_cols[1].link_button("购票入口", ticket_url)
+    poster_url = clean_value(row.get("海报"), "")
+    title = escape(clean_value(row.get("名称"), "未命名信息"))
+    time_text = escape(clean_value(row.get("时间")))
+    location = escape(clean_value(row.get("地点")))
+    intro = escape(clean_value(row.get("简介"), "")[:100])
+    source = escape(clean_value(row.get("来源"), ""))
+    ticket_url = clean_value(row.get("购票入口"), "")
+
+    image_html = (
+        f'<img src="{escape(poster_url)}" alt="{title} 海报" />'
+        if poster_url
+        else '<div style="width:112px;aspect-ratio:3/4;border-radius:6px;background:#e7f0ea;"></div>'
+    )
+    source_html = f'<span class="source-text">来源：{source}</span>' if source else ""
+    ticket_html = (
+        f'<a class="ticket-link" href="{escape(ticket_url)}" target="_blank">购票入口</a>'
+        if ticket_url
+        else ""
+    )
+
+    st.markdown(f"""
+    <article class="performance-card">
+        <div>{image_html}</div>
+        <div>
+            <div class="performance-title">{title}</div>
+            <div class="performance-meta">时间：{time_text}<br/>地点：{location}</div>
+            <div class="performance-intro">{intro}</div>
+            <div>{ticket_html}{source_html}</div>
+        </div>
+    </article>
+    """, unsafe_allow_html=True)
+
+
+def render_section_heading(title, subtitle=""):
+    st.markdown(f"""
+    <div class="section-heading">
+      <h2>{escape(title)}</h2>
+      <span>{escape(subtitle)}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_stat_row(display_df):
+    performance_count = int((display_df["首页板块"] == "舞剧资讯").sum())
+    lecture_count = int((display_df["首页板块"] == "讲座信息").sum())
+    city_count = int(display_df["城市"].nunique())
+    st.markdown(f"""
+    <div class="stat-row">
+      <div class="stat-card"><div class="stat-label">舞剧资讯</div><div class="stat-value">{performance_count}</div></div>
+      <div class="stat-card"><div class="stat-label">讲座信息</div><div class="stat-value">{lecture_count}</div></div>
+      <div class="stat-card"><div class="stat-label">覆盖城市</div><div class="stat-value">{city_count}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_poster_wall(display_df):
+    poster_df = display_df[
+        (display_df["首页板块"] == "舞剧资讯")
+        & (display_df["海报"].astype(str).str.strip() != "")
+    ].head(12)
+
+    if poster_df.empty:
+        return
+
+    tiles = []
+    for _, row in poster_df.iterrows():
+        title = escape(clean_value(row.get("名称"), "未命名信息"))
+        poster = escape(clean_value(row.get("海报"), ""))
+        tiles.append(f"""
+        <div class="poster-tile">
+          <img src="{poster}" alt="{title} 海报" />
+          <div class="poster-title">{title}</div>
+        </div>
+        """)
+
+    render_section_heading("海报墙", "来自信息库中的舞剧海报")
+    st.markdown(f'<div class="poster-wall">{"".join(tiles)}</div>', unsafe_allow_html=True)
 
 
 def load_data():
@@ -330,7 +671,7 @@ try:
         st.info("暂无数据。请先运行采集脚本，或检查 GitHub Actions 是否成功写入 academic_events.db。")
         st.stop()
 
-    search_term = st.text_input("搜索关键词")
+    search_term = st.text_input("搜索", placeholder="输入剧目、讲座、城市或场馆关键词")
     if search_term:
         df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
 
@@ -340,28 +681,33 @@ try:
         st.write("当前没有符合地区与时间条件的信息。")
         st.stop()
 
-    metric_cols = st.columns(2)
-    for col, section in zip(metric_cols, DISPLAY_SECTIONS):
-        col.metric(section, int((display_df["首页板块"] == section).sum()))
+    render_stat_row(display_df)
+    render_poster_wall(display_df)
 
-    st.divider()
+    render_section_heading("信息板块", "一级分类与城市索引")
+    performance_tab, lecture_tab = st.tabs(["舞剧资讯", "讲座信息"])
 
-    for section in DISPLAY_SECTIONS:
-        section_df = display_df[display_df["首页板块"] == section]
-        st.subheader(section)
-
+    with performance_tab:
+        section_df = display_df[display_df["首页板块"] == "舞剧资讯"]
         if section_df.empty:
             st.caption("暂无相关信息")
-            continue
+        else:
+            section_cities = sorted(section_df["城市"].unique(), key=city_sort_key)
+            selected_city = st.radio("城市", section_cities, horizontal=True, label_visibility="collapsed")
+            city_df = section_df[section_df["城市"] == selected_city]
+            st.markdown(f'<span class="city-chip">{escape(selected_city)}</span>', unsafe_allow_html=True)
+            for _, row in city_df.iterrows():
+                render_performance_card(row)
 
-        section_cities = sorted(section_df["城市"].unique(), key=city_sort_key)
-        for city in section_cities:
-            city_df = section_df[section_df["城市"] == city]
-            st.markdown(f"**{city}**")
-            if section == "演出资讯":
-                for _, row in city_df.iterrows():
-                    render_performance_card(row)
-            else:
+    with lecture_tab:
+        section_df = display_df[display_df["首页板块"] == "讲座信息"]
+        if section_df.empty:
+            st.caption("暂无相关信息")
+        else:
+            section_cities = sorted(section_df["城市"].unique(), key=city_sort_key)
+            for city in section_cities:
+                city_df = section_df[section_df["城市"] == city]
+                st.markdown(f'<span class="city-chip">{escape(city)}</span>', unsafe_allow_html=True)
                 st.dataframe(
                     city_df[["名称", "时间", "地点"]],
                     hide_index=True,
