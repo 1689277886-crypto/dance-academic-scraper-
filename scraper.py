@@ -6,7 +6,7 @@ import re
 from bs4 import BeautifulSoup
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, parse_qs
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from google import genai
@@ -56,6 +56,7 @@ DAMAI_SEARCH_URLS = [
     DAMAI_SEARCH_URL_TEMPLATE.format(city=quote(city))
     for city in TARGET_PERFORMANCE_CITIES
 ]
+DAMAI_SEARCH_AJAX_URL = "https://search.damai.cn/searchajax.html"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -592,6 +593,128 @@ def find_nearby_image_url(node):
         container = container.parent
     return None
 
+def parse_cookie_header(raw_cookie: str) -> dict:
+    cookies = {}
+    for piece in raw_cookie.split(";"):
+        if "=" not in piece:
+            continue
+        key, value = piece.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            cookies[key] = value
+    return cookies
+
+def parse_damai_city(search_url: str) -> str:
+    params = parse_qs(urlparse(search_url).query)
+    return (params.get("cty", [""])[0] or "").strip()
+
+def is_damai_punish_response(response_text: str) -> bool:
+    text = response_text or ""
+    return "_____tmd_____" in text and "x5secdata=" in text
+
+def build_damai_item_url(project_id: Optional[str]) -> str:
+    text = str(project_id or "").strip()
+    if not text.isdigit():
+        return ""
+
+    length = len(text)
+    if length <= 8:
+        return f"https://piao.damai.cn/{text}.html"
+    if 9 <= length <= 11 or text == "100000000000":
+        return f"https://item.damai.cn/item/project.htm?id={text}"
+    return f"https://detail.damai.cn/item.htm?id={text}"
+
+def extract_damai_candidates_from_ajax_payload(payload: dict, default_city: str) -> List[dict]:
+    page_data = payload.get("pageData") or {}
+    result_data = page_data.get("resultData") or []
+    candidates = []
+    seen = set()
+
+    for item in result_data:
+        project_id = item.get("projectid") or item.get("projectId") or item.get("id")
+        if not project_id:
+            continue
+
+        ticket_url = (
+            item.get("itemUrl")
+            or item.get("projectUrl")
+            or item.get("url")
+            or build_damai_item_url(project_id)
+        )
+        if not ticket_url:
+            continue
+        if ticket_url.startswith("//"):
+            ticket_url = "https:" + ticket_url
+
+        if ticket_url in seen:
+            continue
+        seen.add(ticket_url)
+
+        title = (item.get("nameNoHtml") or item.get("name") or "").strip()
+        city = (item.get("cityname") or default_city or "").strip()
+        venue = (item.get("venue") or item.get("venueName") or "").strip()
+        show_time = (item.get("showtime") or item.get("showTime") or "").strip()
+        show_status = (item.get("showstatus") or item.get("showStatus") or "").strip()
+        poster_url = (
+            item.get("verticalPic")
+            or item.get("posterURL")
+            or item.get("poster")
+            or item.get("img")
+        )
+        if isinstance(poster_url, str) and poster_url.startswith("//"):
+            poster_url = "https:" + poster_url
+
+        combined_text = " ".join(value for value in [title, city, venue, show_time, show_status] if value).strip()
+        if not combined_text:
+            continue
+
+        candidates.append({
+            "title": title[:120] or combined_text[:120],
+            "city": city,
+            "url": ticket_url,
+            "poster_url": poster_url,
+            "text": combined_text[:1000],
+        })
+
+    return candidates[:30]
+
+def fetch_damai_candidates_via_ajax(search_url: str, city: str, session: requests.Session) -> List[dict]:
+    query = parse_qs(urlparse(search_url).query)
+    params = {
+        "keyword": (query.get("keyword", [""])[0] or "").strip(),
+        "cty": city or (query.get("cty", [""])[0] or "").strip(),
+        "ctl": (query.get("ctl", ["舞蹈芭蕾"])[0] or "舞蹈芭蕾").strip(),
+        "sctl": (query.get("sctl", [""])[0] or "").strip(),
+        "tsg": query.get("tsg", [0])[0] or 0,
+        "st": (query.get("st", [""])[0] or "").strip(),
+        "et": (query.get("et", [""])[0] or "").strip(),
+        "order": query.get("order", [1])[0] or 1,
+        "pageSize": query.get("pageSize", [30])[0] or 30,
+        "currPage": query.get("currPage", [1])[0] or 1,
+        "tn": (query.get("tn", [""])[0] or "").strip(),
+    }
+
+    headers = dict(HEADERS)
+    headers["Referer"] = search_url
+    headers["X-Requested-With"] = "XMLHttpRequest"
+
+    response = session.get(DAMAI_SEARCH_AJAX_URL, params=params, headers=headers, timeout=15)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or "utf-8"
+
+    if is_damai_punish_response(response.text):
+        print("大麦接口触发风控挑战，当前环境无法直接获取演出列表。")
+        return []
+
+    try:
+        payload = response.json()
+    except ValueError:
+        print(f"大麦接口返回非 JSON，前120字：{response.text[:120]}")
+        return []
+
+    return extract_damai_candidates_from_ajax_payload(payload, city)
+
 def extract_damai_candidates(search_url: str, soup: BeautifulSoup, city: str) -> List[dict]:
     candidates = []
     seen = set()
@@ -606,6 +729,15 @@ def extract_damai_candidates(search_url: str, soup: BeautifulSoup, city: str) ->
             full_url = "https:" + full_url
 
         if "damai.cn" not in full_url:
+            continue
+        if not any(
+            marker in full_url for marker in [
+                "item.damai.cn/item/project.htm",
+                "detail.damai.cn/item.htm",
+                "piao.damai.cn/",
+                "m.damai.cn/shows/item.html",
+            ]
+        ):
             continue
 
         title = link.get_text(" ", strip=True)
@@ -668,26 +800,35 @@ def extract_damai_candidates(search_url: str, soup: BeautifulSoup, city: str) ->
 
 def fetch_and_analyze_damai(search_url: str, api_key: str):
     try:
-        city = ""
-        parsed = urlparse(search_url)
-        for part in parsed.query.split("&"):
-            if part.startswith("cty="):
-                city = unquote(part.split("=", 1)[1])
-                break
-        city = city or infer_city_from_text(search_url)
+        city = parse_damai_city(search_url) or infer_city_from_text(search_url)
+
+        session = requests.Session()
+        raw_cookie = os.environ.get("DAMAI_COOKIE", "").strip()
+        if raw_cookie:
+            session.cookies.update(parse_cookie_header(raw_cookie))
 
         print(f"正在抓取大麦舞蹈芭蕾：{city or search_url}")
-        response = requests.get(search_url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        response.encoding = response.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(response.text, "html.parser")
-        candidates = extract_damai_candidates(search_url, soup, city)
-        print(f"大麦候选演出：{len(candidates)} 条。")
+        candidates = fetch_damai_candidates_via_ajax(search_url, city, session)
 
+        if not candidates:
+            print("接口未返回可用结果，尝试回退到页面 HTML 提取。")
+            response = session.get(search_url, headers=HEADERS, timeout=15)
+            response.raise_for_status()
+            response.encoding = response.apparent_encoding or "utf-8"
+            if is_damai_punish_response(response.text):
+                print("大麦页面也触发风控挑战，HTML 回退无法获取演出信息。")
+                return None
+            soup = BeautifulSoup(response.text, "html.parser")
+            candidates = extract_damai_candidates(search_url, soup, city)
+
+        print(f"大麦候选演出：{len(candidates)} 条。")
         if not candidates:
             return None
 
-        candidates = candidates[:5]
+        candidates = candidates[:12]
+        response = session.get(search_url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        source_html = response.text[:1500]
 
         prompt = (
             "你是一个舞蹈演出数据整理助手。请只从下面的大麦候选演出中筛选舞剧、舞蹈、芭蕾相关信息。"
@@ -701,7 +842,8 @@ def fetch_and_analyze_damai(search_url: str, api_key: str):
         )
         contents = [
             prompt,
-            "大麦候选数据：\n" + json.dumps(candidates, ensure_ascii=False)
+            "大麦候选数据：\n" + json.dumps(candidates, ensure_ascii=False),
+            "页面片段（用于校验城市与场馆上下文）：\n" + source_html
         ]
 
         print("正在请求 Gemini API 整理大麦演出信息...")
