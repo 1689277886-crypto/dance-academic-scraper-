@@ -42,6 +42,7 @@ jobs:
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+        DAMAI_COOKIE: ${{ secrets.DAMAI_COOKIE }}
         ARTICLE_URLS: ${{ inputs.article_urls }}
         WEBSITE_URLS: ${{ inputs.website_urls }}
       run: python -u ./scraper.py
