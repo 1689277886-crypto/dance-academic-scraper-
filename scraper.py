@@ -792,9 +792,10 @@ def extract_damai_candidates_from_ajax_payload(payload: dict, default_city: str)
 
 def fetch_damai_candidates_via_ajax(search_url: str, city: str, session: requests.Session) -> List[dict]:
     query = parse_qs(urlparse(search_url).query)
+    normalized_city = city if city in TARGET_PERFORMANCE_CITIES else ""
     params = {
         "keyword": (query.get("keyword", [""])[0] or "").strip(),
-        "cty": city or (query.get("cty", [""])[0] or "").strip(),
+        "cty": normalized_city or (query.get("cty", [""])[0] or "").strip(),
         "ctl": (query.get("ctl", ["舞蹈芭蕾"])[0] or "舞蹈芭蕾").strip(),
         "sctl": (query.get("sctl", [""])[0] or "").strip(),
         "tsg": query.get("tsg", [0])[0] or 0,
@@ -957,9 +958,51 @@ def extract_damai_candidates_via_selenium(search_url: str, city: str) -> List[di
         driver.get(search_url)
         wait_seconds = float(os.environ.get("DAMAI_SELENIUM_WAIT", "3"))
         time.sleep(max(wait_seconds, 1.0))
+
+        # 部分环境直接打开带 cty 参数页面会变成“全国且空结果”，这里按参考脚本先开搜索首页再输入关键词。
+        search_keyword = os.environ.get("DAMAI_SELENIUM_KEYWORD", "舞剧")
+        search_box_candidates = [
+            "input[placeholder*='搜索']",
+            "input[placeholder*='明星']",
+            "input[type='text']",
+        ]
+        search_box = None
+        for selector in search_box_candidates:
+            try:
+                node = driver.find_element("css selector", selector)
+                if node and node.is_displayed():
+                    search_box = node
+                    break
+            except Exception:
+                continue
+        if search_box:
+            try:
+                search_box.clear()
+                search_box.send_keys(search_keyword)
+                search_box.submit()
+                time.sleep(max(wait_seconds, 1.0))
+            except Exception:
+                pass
+
+        if city in TARGET_PERFORMANCE_CITIES:
+            city_label_candidates = [city, "全国"]
+            for label in city_label_candidates:
+                try:
+                    city_nodes = driver.find_elements("xpath", f"//*[contains(text(),'{label}')]")
+                    for city_node in city_nodes:
+                        text = (city_node.text or "").strip()
+                        if text == label and city_node.is_displayed():
+                            city_node.click()
+                            time.sleep(1.2)
+                            break
+                except Exception:
+                    continue
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
 
+        page_text = soup.get_text(" ", strip=True)
+        if "共0个商品" in page_text and "努力加载中" in page_text:
+            print("Selenium 页面显示为空结果（共0个商品），可能仍被风控或未渲染出列表。")
         cards = soup.select("div.item__box div.items")
         if not cards:
             cards = soup.select("div.item__box > div > div")
