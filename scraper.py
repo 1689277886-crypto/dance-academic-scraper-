@@ -913,6 +913,7 @@ def extract_damai_candidates_via_selenium(search_url: str, city: str) -> List[di
     """参考爬虫.py：使用浏览器渲染页面后再提取大麦演出卡片。"""
     try:
         from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
         from selenium.webdriver.firefox.options import Options as FirefoxOptions
     except Exception as error:
         print(f"Selenium 不可用，跳过浏览器渲染抓取：{error}")
@@ -920,10 +921,39 @@ def extract_damai_candidates_via_selenium(search_url: str, city: str) -> List[di
 
     driver = None
     try:
-        options = FirefoxOptions()
-        if os.environ.get("DAMAI_SELENIUM_HEADLESS", "1") != "0":
-            options.add_argument("-headless")
-        driver = webdriver.Firefox(options=options)
+        preferred = os.environ.get("DAMAI_SELENIUM_BROWSER", "chrome").strip().lower()
+        browser_order = []
+        for browser_name in [preferred, "chrome", "firefox"]:
+            if browser_name and browser_name not in browser_order:
+                browser_order.append(browser_name)
+
+        last_error = None
+        for browser_name in browser_order:
+            try:
+                if browser_name == "firefox":
+                    options = FirefoxOptions()
+                    if os.environ.get("DAMAI_SELENIUM_HEADLESS", "1") != "0":
+                        options.add_argument("-headless")
+                    driver = webdriver.Firefox(options=options)
+                else:
+                    options = ChromeOptions()
+                    if os.environ.get("DAMAI_SELENIUM_HEADLESS", "1") != "0":
+                        options.add_argument("--headless=new")
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--no-sandbox")
+                    options.add_argument("--disable-dev-shm-usage")
+                    driver = webdriver.Chrome(options=options)
+                print(f"Selenium 已启动浏览器：{browser_name}")
+                break
+            except Exception as browser_error:
+                last_error = browser_error
+                driver = None
+                print(f"Selenium 启动 {browser_name} 失败：{browser_error}")
+
+        if not driver:
+            print(f"Selenium 浏览器启动失败，跳过浏览器渲染抓取：{last_error}")
+            return []
+
         driver.get(search_url)
         wait_seconds = float(os.environ.get("DAMAI_SELENIUM_WAIT", "3"))
         time.sleep(max(wait_seconds, 1.0))
