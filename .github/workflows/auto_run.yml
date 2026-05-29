@@ -35,8 +35,13 @@ jobs:
       with:
         python-version: '3.13'
 
+    - name: Set up Chrome
+      uses: browser-actions/setup-chrome@v2
+      with:
+        install-chromedriver: true
+
     - name: Install Dependencies
-      run: pip install requests beautifulsoup4 google-genai pydantic
+      run: pip install requests beautifulsoup4 google-genai pydantic selenium
 
     - name: Run Scraper
       env:
