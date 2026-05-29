@@ -3,6 +3,8 @@ import sqlite3
 import json
 import requests
 import re
+import time
+import urllib3
 from bs4 import BeautifulSoup
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -61,6 +63,11 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+GEMINI_GEO_BLOCKED = "__GEMINI_GEO_BLOCKED__"
+POSTER_IMAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poster_images")
+
+# 仅在站点证书过期时使用 verify=False 兜底，避免控制台警告刷屏。
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==================== 1. 定义预期的结构化 JSON 格式 ====================
 class AcademicEvent(BaseModel):
@@ -98,6 +105,7 @@ def init_database():
     }
     extra_columns = {
         "poster_url": "TEXT",
+        "poster_local_path": "TEXT",
         "intro": "TEXT",
         "ticket_url": "TEXT",
         "source": "TEXT",
@@ -224,6 +232,72 @@ def source_name_from_url(url: str) -> str:
         return "微信公众号"
     return host or "未知来源"
 
+def normalize_poster_url(poster_url: Optional[str]) -> str:
+    text = str(poster_url or "").strip()
+    if not text:
+        return ""
+    if text.startswith("//"):
+        return "https:" + text
+    return text
+
+def safe_filename(text: Optional[str], fallback: str = "poster") -> str:
+    cleaned = re.sub(r"[^\w\-\u4e00-\u9fff]+", "_", str(text or ""))
+    cleaned = cleaned.strip("_")
+    return cleaned[:80] or fallback
+
+def detect_image_ext(url: str, content_type: str) -> str:
+    content_type = (content_type or "").lower()
+    if "png" in content_type:
+        return ".png"
+    if "webp" in content_type:
+        return ".webp"
+    if "jpeg" in content_type or "jpg" in content_type:
+        return ".jpg"
+    path = urlparse(url).path.lower()
+    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        if path.endswith(ext):
+            return ext
+    return ".jpg"
+
+def download_poster_image(
+    poster_url: Optional[str],
+    title: str,
+    city: str = "",
+    source: str = "",
+    session: Optional[requests.Session] = None,
+) -> Optional[str]:
+    normalized_url = normalize_poster_url(poster_url)
+    if not normalized_url:
+        return None
+    try:
+        response = get_with_ssl_fallback(
+            normalized_url,
+            headers=HEADERS,
+            timeout=12,
+            session=session,
+        )
+        content_type = response.headers.get("Content-Type", "")
+        if "image" not in content_type.lower():
+            return None
+
+        os.makedirs(POSTER_IMAGE_DIR, exist_ok=True)
+        ext = detect_image_ext(normalized_url, content_type)
+        file_stem = "_".join(
+            part for part in [
+                datetime.now(LOCAL_TZ).strftime("%Y%m%d_%H%M%S"),
+                safe_filename(source, "source"),
+                safe_filename(city, "city"),
+                safe_filename(title, "untitled"),
+            ] if part
+        )
+        local_path = os.path.join(POSTER_IMAGE_DIR, f"{file_stem}{ext}")
+        with open(local_path, "wb") as file_obj:
+            file_obj.write(response.content)
+        return local_path
+    except Exception as error:
+        print(f"海报下载失败：{normalized_url} ({error})")
+        return None
+
 def prune_expired_events() -> int:
     """删除数据库中非今天/未来的信息，包括日期无法解析的信息。"""
     conn = sqlite3.connect('academic_events.db')
@@ -319,9 +393,16 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
     date_text = event.get("date_time")
     location = event.get("location")
     summary = str(event.get("summary") or "")
-    poster_url = event.get("poster_url")
+    poster_url = normalize_poster_url(event.get("poster_url"))
     ticket_url = event.get("ticket_url") or source_url
     source = event.get("source") or source_name_from_url(source_url)
+    city = infer_city_from_text(location, title, summary)
+    poster_local_path = download_poster_image(
+        poster_url=poster_url,
+        title=title,
+        city=city,
+        source=source,
+    )
 
     if not title or is_excluded_show(title):
         return "skipped"
@@ -340,7 +421,7 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
             cursor.execute('''
                 UPDATE academic_events
                 SET category = ?, title = ?, date = ?, location = ?, summary = ?, url = ?,
-                    poster_url = ?, intro = ?, ticket_url = ?, source = ?
+                    poster_url = ?, poster_local_path = ?, intro = ?, ticket_url = ?, source = ?
                 WHERE id = ?
             ''', (
                 category,
@@ -350,6 +431,7 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
                 summary[:100],
                 ticket_url,
                 poster_url,
+                poster_local_path,
                 summary[:100],
                 ticket_url,
                 source,
@@ -360,8 +442,8 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
 
     cursor.execute('''
         INSERT OR IGNORE INTO academic_events
-        (category, title, date, location, summary, url, poster_url, intro, ticket_url, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (category, title, date, location, summary, url, poster_url, poster_local_path, intro, ticket_url, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         category,
         title,
@@ -370,6 +452,7 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
         summary[:100],
         ticket_url,
         poster_url,
+        poster_local_path,
         summary[:100],
         ticket_url,
         source
@@ -389,7 +472,7 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
             cursor.execute('''
                 UPDATE academic_events
                 SET category = ?, location = ?, summary = ?, url = ?,
-                    poster_url = ?, intro = ?, ticket_url = ?, source = ?
+                    poster_url = ?, poster_local_path = ?, intro = ?, ticket_url = ?, source = ?
                 WHERE id = ?
             ''', (
                 category,
@@ -397,6 +480,7 @@ def save_event_record(cursor, event: dict, source_url: str) -> str:
                 summary[:100],
                 ticket_url,
                 poster_url,
+                poster_local_path,
                 summary[:100],
                 ticket_url,
                 source,
@@ -530,11 +614,39 @@ def fetch_and_analyze_article(url: str, api_key: str):
         return response.text
 
     except Exception as e:
+        if is_gemini_geo_block_error(e):
+            print("Gemini 当前网络地区不可用：User location is not supported for the API use。")
+            return GEMINI_GEO_BLOCKED
         print(f"程序运行异常: {str(e)}")
         return None
 
 def normalize_urls(raw_urls: str) -> List[str]:
     return [url.strip() for url in raw_urls.replace("\n", ",").split(",") if url.strip()]
+
+def is_gemini_geo_block_error(error: Exception) -> bool:
+    text = str(error)
+    return (
+        "User location is not supported for the API use" in text
+        or ("FAILED_PRECONDITION" in text and "location" in text.lower())
+    )
+
+def get_with_ssl_fallback(
+    url: str,
+    headers: Optional[dict] = None,
+    timeout: int = 12,
+    session: Optional[requests.Session] = None,
+):
+    requester = session.get if session else requests.get
+    req_headers = headers or HEADERS
+    try:
+        response = requester(url, headers=req_headers, timeout=timeout)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.SSLError as ssl_error:
+        print(f"证书校验失败，尝试不校验证书重试：{url} ({ssl_error})")
+        response = requester(url, headers=req_headers, timeout=timeout, verify=False)
+        response.raise_for_status()
+        return response
 
 def same_site(base_url: str, target_url: str) -> bool:
     base_host = urlparse(base_url).netloc.replace("www.", "")
@@ -570,8 +682,7 @@ def extract_candidate_links(base_url: str, soup: BeautifulSoup, max_links: int =
     return candidates
 
 def fetch_page_text(url: str, max_chars: int = 5000) -> str:
-    response = requests.get(url, headers=HEADERS, timeout=12)
-    response.raise_for_status()
+    response = get_with_ssl_fallback(url, headers=HEADERS, timeout=12)
     response.encoding = response.apparent_encoding or "utf-8"
     soup = BeautifulSoup(response.text, "html.parser")
     for node in soup(["script", "style", "noscript"]):
@@ -798,6 +909,118 @@ def extract_damai_candidates(search_url: str, soup: BeautifulSoup, city: str) ->
 
     return candidates[:20]
 
+def extract_damai_candidates_via_selenium(search_url: str, city: str) -> List[dict]:
+    """参考爬虫.py：使用浏览器渲染页面后再提取大麦演出卡片。"""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.firefox.options import Options as FirefoxOptions
+    except Exception as error:
+        print(f"Selenium 不可用，跳过浏览器渲染抓取：{error}")
+        return []
+
+    driver = None
+    try:
+        options = FirefoxOptions()
+        if os.environ.get("DAMAI_SELENIUM_HEADLESS", "1") != "0":
+            options.add_argument("-headless")
+        driver = webdriver.Firefox(options=options)
+        driver.get(search_url)
+        wait_seconds = float(os.environ.get("DAMAI_SELENIUM_WAIT", "3"))
+        time.sleep(max(wait_seconds, 1.0))
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+
+        cards = soup.select("div.item__box div.items")
+        if not cards:
+            cards = soup.select("div.item__box > div > div")
+
+        candidates = []
+        seen = set()
+        for card in cards:
+            link_node = (
+                card.select_one("a[href*='item.damai.cn']")
+                or card.select_one("a[href*='detail.damai.cn']")
+                or card.select_one("a[href*='piao.damai.cn']")
+                or card.select_one("a[href]")
+            )
+            if not link_node:
+                continue
+            full_url = urljoin(search_url, link_node.get("href", ""))
+            if not full_url or full_url in seen:
+                continue
+
+            title_node = card.select_one(".items__txt a") or link_node
+            title = title_node.get_text(" ", strip=True)
+            text = card.get_text(" ", strip=True)
+            if not title and not text:
+                continue
+            if not any(keyword in (title + text) for keyword in ["舞", "芭蕾", "剧", "演出"]):
+                continue
+
+            image_node = card.select_one("img")
+            poster_url = None
+            if image_node:
+                poster_url = (
+                    image_node.get("src")
+                    or image_node.get("data-src")
+                    or image_node.get("data-original")
+                )
+                poster_url = normalize_poster_url(poster_url)
+
+            seen.add(full_url)
+            candidates.append({
+                "title": title[:120] or text[:120],
+                "city": city,
+                "url": full_url,
+                "poster_url": poster_url,
+                "text": text[:1000],
+            })
+
+        return candidates[:20]
+    except Exception as error:
+        print(f"Selenium 抓取大麦失败：{search_url} ({error})")
+        return []
+    finally:
+        if driver:
+            driver.quit()
+
+def enrich_damai_model_output_with_posters(json_str: str, candidates: List[dict]) -> str:
+    try:
+        data = parse_model_json(json_str)
+        events = data.get("events", [])
+        if not events:
+            return json_str
+
+        by_url = {}
+        by_title = {}
+        for candidate in candidates:
+            poster_url = normalize_poster_url(candidate.get("poster_url"))
+            if not poster_url:
+                continue
+            url_key = str(candidate.get("url") or "").strip()
+            title_key = normalize_title(candidate.get("title"))
+            if url_key:
+                by_url[url_key] = poster_url
+            if title_key:
+                by_title[title_key] = poster_url
+
+        changed = False
+        for event in events:
+            if normalize_poster_url(event.get("poster_url")):
+                continue
+            ticket_key = str(event.get("ticket_url") or "").strip()
+            title_key = normalize_title(event.get("title"))
+            poster_url = by_url.get(ticket_key) or by_title.get(title_key)
+            if poster_url:
+                event["poster_url"] = poster_url
+                changed = True
+
+        if not changed:
+            return json_str
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return json_str
+
 def fetch_and_analyze_damai(search_url: str, api_key: str):
     try:
         city = parse_damai_city(search_url) or infer_city_from_text(search_url)
@@ -817,9 +1040,13 @@ def fetch_and_analyze_damai(search_url: str, api_key: str):
             response.encoding = response.apparent_encoding or "utf-8"
             if is_damai_punish_response(response.text):
                 print("大麦页面也触发风控挑战，HTML 回退无法获取演出信息。")
-                return None
-            soup = BeautifulSoup(response.text, "html.parser")
-            candidates = extract_damai_candidates(search_url, soup, city)
+            else:
+                soup = BeautifulSoup(response.text, "html.parser")
+                candidates = extract_damai_candidates(search_url, soup, city)
+
+        if not candidates and os.environ.get("DAMAI_USE_SELENIUM", "1") != "0":
+            print("尝试使用 Selenium 渲染页面抓取（参考爬虫.py）。")
+            candidates = extract_damai_candidates_via_selenium(search_url, city)
 
         print(f"大麦候选演出：{len(candidates)} 条。")
         if not candidates:
@@ -853,17 +1080,19 @@ def fetch_and_analyze_damai(search_url: str, api_key: str):
             contents=contents,
             config=get_model_config()
         )
-        return response.text
+        return enrich_damai_model_output_with_posters(response.text, candidates)
 
     except Exception as e:
+        if is_gemini_geo_block_error(e):
+            print("Gemini 当前网络地区不可用：User location is not supported for the API use。")
+            return GEMINI_GEO_BLOCKED
         print(f"大麦采集异常：{search_url} ({e})")
         return None
 
 def fetch_and_analyze_website(url: str, api_key: str):
     try:
         print(f"正在抓取网站入口：{url}")
-        response = requests.get(url, headers=HEADERS, timeout=12)
-        response.raise_for_status()
+        response = get_with_ssl_fallback(url, headers=HEADERS, timeout=12)
         response.encoding = response.apparent_encoding or "utf-8"
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -909,6 +1138,9 @@ def fetch_and_analyze_website(url: str, api_key: str):
         return response.text
 
     except Exception as e:
+        if is_gemini_geo_block_error(e):
+            print("Gemini 当前网络地区不可用：User location is not supported for the API use。")
+            return GEMINI_GEO_BLOCKED
         print(f"网站采集异常：{url} ({e})")
         return None
 
@@ -921,9 +1153,13 @@ if __name__ == "__main__":
     raw_urls = os.environ.get("ARTICLE_URLS", "")
     article_urls = normalize_urls(raw_urls)
 
-    raw_website_urls = os.environ.get("WEBSITE_URLS") or ",".join(DEFAULT_WEBSITE_URLS)
+    raw_website_urls = os.environ.get("WEBSITE_URLS")
+    if raw_website_urls is None:
+        raw_website_urls = ",".join(DEFAULT_WEBSITE_URLS)
     website_urls = normalize_urls(raw_website_urls)
-    raw_damai_urls = os.environ.get("DAMAI_URLS") or ",".join(DAMAI_SEARCH_URLS)
+    raw_damai_urls = os.environ.get("DAMAI_URLS")
+    if raw_damai_urls is None:
+        raw_damai_urls = ",".join(DAMAI_SEARCH_URLS)
     damai_urls = normalize_urls(raw_damai_urls)
 
     if not article_urls and not website_urls and not damai_urls:
@@ -948,32 +1184,47 @@ if __name__ == "__main__":
 
     if GEMINI_API_KEY:
         total_saved = 0
+        geo_blocked = False
         for article_url in article_urls:
             print(f"\n开始处理文章：{article_url}")
             json_output = fetch_and_analyze_article(article_url, GEMINI_API_KEY)
+            if json_output == GEMINI_GEO_BLOCKED:
+                geo_blocked = True
+                break
             if json_output:
                 print(f"模型返回前300字：{json_output[:300]}")
                 total_saved += save_to_database(json_output, article_url)
             else:
                 print("本篇文章没有返回可保存的提取结果。")
 
-        for website_url in website_urls:
-            print(f"\n开始处理网站：{website_url}")
-            json_output = fetch_and_analyze_website(website_url, GEMINI_API_KEY)
-            if json_output:
-                print(f"模型返回前300字：{json_output[:300]}")
-                total_saved += save_to_database(json_output, website_url)
-            else:
-                print("本网站没有返回可保存的筛选结果。")
+        if not geo_blocked:
+            for website_url in website_urls:
+                print(f"\n开始处理网站：{website_url}")
+                json_output = fetch_and_analyze_website(website_url, GEMINI_API_KEY)
+                if json_output == GEMINI_GEO_BLOCKED:
+                    geo_blocked = True
+                    break
+                if json_output:
+                    print(f"模型返回前300字：{json_output[:300]}")
+                    total_saved += save_to_database(json_output, website_url)
+                else:
+                    print("本网站没有返回可保存的筛选结果。")
 
-        for damai_url in damai_urls:
-            print(f"\n开始处理大麦：{damai_url}")
-            json_output = fetch_and_analyze_damai(damai_url, GEMINI_API_KEY)
-            if json_output:
-                print(f"模型返回前300字：{json_output[:300]}")
-                total_saved += save_to_database(json_output, damai_url)
-            else:
-                print("本大麦入口没有返回可保存的演出结果。")
+        if not geo_blocked:
+            for damai_url in damai_urls:
+                print(f"\n开始处理大麦：{damai_url}")
+                json_output = fetch_and_analyze_damai(damai_url, GEMINI_API_KEY)
+                if json_output == GEMINI_GEO_BLOCKED:
+                    geo_blocked = True
+                    break
+                if json_output:
+                    print(f"模型返回前300字：{json_output[:300]}")
+                    total_saved += save_to_database(json_output, damai_url)
+                else:
+                    print("本大麦入口没有返回可保存的演出结果。")
+
+        if geo_blocked:
+            print("\n本次运行提前结束：当前网络地区不支持 Gemini API。请切换到受支持网络后重试。")
 
         prune_expired_events()
         dedupe_events_prefer_damai()
